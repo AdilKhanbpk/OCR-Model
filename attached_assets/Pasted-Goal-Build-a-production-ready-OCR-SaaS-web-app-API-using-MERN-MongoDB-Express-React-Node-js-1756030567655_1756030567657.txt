@@ -1,0 +1,447 @@
+Goal:
+Build a production-ready OCR SaaS (web app + API) using MERN (MongoDB, Express, React, Node.js) that integrates Google Cloud Vision API for OCR (Document Text Detection, PDF/TIFF support, multi-language including English + Urdu). The app must support self-serve user onboarding, usage-based plans (free + paid), API keys, rate limiting, analytics, and an admin console.
+
+1) Product Overview & Personas
+
+Personas
+
+Developer user: wants a REST API to send images/PDFs and get structured text back.
+
+Business user: wants to upload receipts/invoices/CNIC scans and export CSV/JSON.
+
+Admin: manages users, plans, quotas, abuse, and system health.
+
+Core Value
+
+Accurate, fast OCR for images & PDFs, with language hints (en, ur), basic layout extraction, optional invoice/receipt field extraction, and searchable PDF output.
+
+2) Feature Set (MVP + Plus)
+
+MVP
+
+Email/password auth + OAuth (Google)
+
+Dashboard: upload images/PDFs, view results, copy/export text/JSON/CSV.
+
+Google Vision OCR integration:
+
+TEXT_DETECTION and DOCUMENT_TEXT_DETECTION
+
+PDF/TIFF via batchAnnotateFiles (GCS integration)
+
+Language hints: ["en", "ur"]
+
+Handwriting support toggle
+
+REST API with API key auth:
+
+POST /v1/ocr for images
+
+POST /v1/ocr/pdf for PDFs (single/multi-page)
+
+GET /v1/usage usage stats
+
+Plans & quotas:
+
+Free: 50 pages/month
+
+Pro: 2,000 pages/month
+
+Business: 10,000 pages/month
+
+Overages blocked with graceful error + upsell
+
+Rate limiting per API key (e.g., 10 req/sec burst, 1000/day free).
+
+Usage logs (per request) + downloadable CSV.
+
+Webhooks (POST on job completion) for async PDF jobs.
+
+Searchable PDF generation option.
+
+Billing (Stripe): subscriptions + invoices + dunning.
+
+Admin panel: users, plans, limits, manual credits, abuse flags, system metrics.
+
+Security: JWT, hashed API keys, HTTPS, input validation, file scanning, size limits.
+
+Responsive UI (mobile-first), dark/light theme, i18n-ready (en → later ur).
+
+Nice-to-have (ship if time)
+
+Simple template-based field extraction for receipts/invoices (date, total, vendor).
+
+CNIC layout preset (extract name/id/dob safely from front side).
+
+Batch uploads (zip), progress UI.
+
+Team accounts (org + members, shared billing).
+
+Basic SSO for Business plan.
+
+3) Tech Stack & Integrations
+
+Frontend: React + Vite, TypeScript, Tailwind CSS, shadcn/ui, React Query, React Router.
+
+Backend: Node.js + Express + TypeScript.
+
+DB: MongoDB (Atlas).
+
+Storage:
+
+Short-term uploads: local tmp (or S3-compatible/GCS bucket).
+
+PDF OCR requires files in Google Cloud Storage (GCS).
+
+OCR: Google Cloud Vision API.
+
+Payments: Stripe subscriptions + customer portal.
+
+Email: Resend/SendGrid for verification, reset, receipts.
+
+Auth: JWT (access/refresh), OAuth (Google).
+
+Background jobs: BullMQ + Redis for PDF/large jobs.
+
+Observability: Winston logs, OpenTelemetry traces, health checks /healthz, uptime pings.
+
+Rate limiting: Redis-backed.
+
+4) Environment & Secrets
+
+Use .env and secure secret storage:
+
+NODE_ENV=production
+PORT=8080
+MONGODB_URI=...
+JWT_ACCESS_SECRET=...
+JWT_REFRESH_SECRET=...
+FRONTEND_URL=https://...
+BACKEND_URL=https://...
+
+STRIPE_SECRET_KEY=...
+STRIPE_WEBHOOK_SECRET=...
+PLAN_FREE_ID=...
+PLAN_PRO_ID=...
+PLAN_BUSINESS_ID=...
+
+GCP_PROJECT_ID=...
+GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account.json
+GCS_BUCKET=ocr-pdfs
+VISION_FEATURE=document_text_detection
+
+REDIS_URL=redis://...
+FILE_MAX_MB=20
+ALLOWED_MIME=image/jpeg,image/png,application/pdf
+
+5) Data Model (MongoDB Collections)
+
+users
+
+_id, email (unique), passwordHash, name, oauthProvider, roles: ["user"|"admin"]
+
+plan: "free"|"pro"|"business", stripeCustomerId, apiKeys: [{hash, label, createdAt}]
+
+quota: {periodStart, pagesUsed, pagesLimit}
+
+createdAt, updatedAt
+
+jobs (OCR requests; image or PDF)
+
+_id, userId, type: "image"|"pdf", status: "queued"|"processing"|"done"|"error"
+
+input: {source: "upload"|"url"|"gcs", filename, mime, size, pages?}
+
+visionConfig: {languageHints: ["en","ur"], detectHandwriting: bool, enableLayout: bool}
+
+result: {rawText, blocks, pages, searchablePdfUrl?, json?, csv?}
+
+cost: {pagesCount, planAtUse}
+
+error?, durationMs, createdAt, updatedAt
+
+usage_logs
+
+_id, userId, jobId, pages, bytes, status, ip, ua, ts
+
+webhooks
+
+_id, userId, url, secret, events: ["job.completed"], active
+
+audit_events (admin & security)
+
+_id, actorId, action, meta, ts
+
+6) Backend API (OpenAPI-style Summary)
+
+Auth & Keys
+
+POST /auth/register {email, password, name}
+
+POST /auth/login {email, password}
+
+POST /auth/refresh
+
+POST /auth/forgot → email magic link
+
+POST /auth/reset
+
+GET /me
+
+POST /keys (create API key) → returns one-time plaintext key, store only hash
+
+DELETE /keys/:id
+
+OCR (sync for images ≤ 10MB, async for PDFs or big images)
+
+POST /v1/ocr
+
+Body: {file | url, languageHints?, detectHandwriting?, searchablePdf? (false)}
+
+Returns: {jobId, status, rawText, blocks, confidenceAvg, searchablePdfUrl?}
+
+POST /v1/ocr/pdf
+
+Body: {file | gcsUri | url, languageHints?, searchablePdf? (true|false default true)}
+
+Behavior: enqueue job → 202 Accepted {jobId}
+
+GET /v1/jobs/:jobId
+
+Returns job status/result.
+
+POST /v1/webhooks/test (verifies target endpoint with signed request)
+
+Usage & Billing
+
+GET /v1/usage → {periodStart, pagesUsed, pagesLimit, estResetDate}
+
+GET /billing/portal (Stripe customer portal link)
+
+Webhooks: /webhooks/stripe handler
+
+Admin
+
+/admin/users list/search
+
+/admin/users/:id update plan/limits/ban
+
+/admin/jobs list/filter
+
+/admin/metrics (queue depth, error rates)
+
+Errors
+
+Standard JSON problem details {code, message, details?}.
+
+Quota exceeded: 429 with upgrade link.
+
+7) Google Vision Integration Requirements
+
+Images (sync path)
+
+Use images.annotate with DOCUMENT_TEXT_DETECTION when dense, else TEXT_DETECTION.
+
+Set imageContext.languageHints = ["en", "ur"].
+
+For handwriting, set model hint if available; otherwise fallback to DOCUMENT_TEXT_DETECTION and label result as “handwriting (beta)”.
+
+PDF/TIFF (async path)
+
+Upload to GCS (gs://bucket/key.pdf).
+
+Use asyncBatchAnnotateFiles / batchAnnotateFiles for PDFs.
+
+Poll operation until done; store JSON output and (if searchablePdf=true) generate a searchable PDF by overlaying text layer (or use Vision’s native output if available; otherwise post-process with pdfrw/pdf-lib).
+
+Preprocessing (accuracy bump)
+
+For raster images: deskew, grayscale, adaptive threshold, despeckle; auto-rotate using EXIF or text angle; max dimension clamp (e.g., 3000px).
+
+Reject files > FILE_MAX_MB or with disallowed MIME; return 413/415.
+
+Structured Output
+
+Normalize Vision response into:
+
+rawText (full text)
+
+pages[] {width, height, blocks[] {text, bbox, paragraphs[], confidence}}
+
+confidenceAvg (mean over symbols/words)
+
+Optional field extraction modules:
+
+invoiceExtractor(rawText): returns {vendor, invoiceNo, date, total, tax?} (regex + heuristics)
+
+cnicExtractor(rawText): returns {name?, id?, dob?} (best-effort; warn: not official verification)
+
+8) Frontend (React) Requirements
+
+Pages
+
+/ Landing: hero, features, pricing, docs links, signup CTA.
+
+/dashboard (auth): upload (drag & drop), file list, job history table, result viewer (tabs: Text / JSON / Searchable PDF).
+
+/api-keys: create/revoke keys, copy once.
+
+/usage: quota bar, monthly usage chart (line), export CSV.
+
+/pricing: Free / Pro / Business cards, select plan.
+
+/docs: quick start, curl examples, Node/JS example, error codes, rate limits.
+
+/settings: profile, email, password, webhooks config (URL + secret).
+
+/admin/*: users, jobs, metrics.
+
+UI
+
+Tailwind + shadcn/ui; dark/light toggle; mobile first.
+
+Accessible components (labels, keyboard nav).
+
+Toasts for success/error; skeleton loaders.
+
+Visual job timeline & status pills.
+
+Docs: Quick Start Snippets
+
+curl example:
+
+curl -X POST https://api.yourdomain.com/v1/ocr \
+  -H "Authorization: Bearer <API_KEY>" \
+  -F "file=@/path/image.jpg" \
+  -F "languageHints=en,ur" \
+  -F "searchablePdf=false"
+
+
+Node.js example (fetch or axios) with file upload.
+
+PDF job async example + polling.
+
+9) Security, Compliance, Reliability
+
+Validate input size/type; strip EXIF; scan for malware where applicable.
+
+Store uploads ephemerally (default 24h) unless user toggles “Keep files”.
+
+PII notice in ToS. Provide Delete Data button (hard delete).
+
+All API over HTTPS. Set CORS for app domains.
+
+JWT rotation + refresh; 2FA (optional).
+
+Rate limit by IP + API key. Detect abuse, ban flow.
+
+Logs: never store raw files in logs; redact secrets.
+
+Backups: Mongo daily snapshot; retention 14 days.
+
+10) Pricing & Plan Logic
+
+Free: 50 pages/month, 10 MB/file, 10 RPM, no PDF > 20 pages.
+
+Pro: 2,000 pages/month, 25 MB/file, 30 RPM, PDF up to 200 pages, webhook access.
+
+Business: 10,000 pages/month, 50 MB/file, 60 RPM, priority queue, SSO request form.
+
+Usage counters increment by pages (PDF pages, or 1 per image). Show soft warning at 80% usage.
+
+11) DevOps & Deployment
+
+Monorepo (apps/web, apps/api, packages/shared).
+
+Dockerfiles for api & web; docker-compose for local (mongo, redis, worker).
+
+CI: lint, typecheck, test, build; CD to staging/prod.
+
+Health endpoints: /healthz (api), /readyz (worker).
+
+Error monitoring (Sentry) and performance metrics.
+
+Static assets on CDN.
+
+12) Testing & Quality
+
+Unit tests: extractors, usage counter, billing guards.
+
+E2E tests (Playwright): upload → result flow; API key auth; rate limit.
+
+Load test for 100 RPS bursts.
+
+Accessibility audit (Lighthouse ≥ 90).
+
+13) Acceptance Criteria (Checklist)
+
+ Users can sign up/log in, create API keys, and run OCR on images synchronously.
+
+ Users can submit a PDF and receive a job ID, then fetch results when ready.
+
+ Results include rawText, blocks/pages, optional searchablePdfUrl.
+
+ Usage and quotas enforced; over-quota returns clear 429 with upgrade link.
+
+ Stripe billing works end-to-end; plan changes update quotas.
+
+ Admin can search users, view jobs, set limits, and ban users.
+
+ API docs contain runnable examples; CORS configured correctly.
+
+ Logs, metrics, health checks operational; graceful error handling.
+
+ Responsive UI with accessible components; dark mode.
+
+ Security basics met: JWT, hashed API keys, validation, no secrets in logs.
+
+14) Example Backend Handler (Pseudo/TypeScript)
+// POST /v1/ocr (image sync)
+async function ocrImage(req, res) {
+  const user = req.authUser; // from API key/JWT
+  await enforceRateLimit(user);
+  await checkQuota(user, 1);
+
+  const file = await parseMultipart(req); // validate mime/size
+  const imgBytes = await preprocess(file.buffer); // deskew/threshold
+
+  const visionReq = {
+    image: { content: imgBytes.toString('base64') },
+    features: [{ type: 'DOCUMENT_TEXT_DETECTION' }],
+    imageContext: { languageHints: ['en', 'ur'] }
+  };
+
+  const visionRes = await vision.images.annotate({ requests: [visionReq] });
+  const result = normalizeVisionResponse(visionRes);
+
+  await incrementUsage(user, 1);
+  await saveJob(user, { type:'image', status:'done', result });
+
+  return res.json({ status:'done', ...result });
+}
+
+15) Branding & SEO Basics
+
+SEO: landing page with “OCR API for Images & PDFs (English, Urdu)”, fast LCP, sitemap, meta tags, JSON-LD.
+
+Blog: “How to OCR Urdu in Node.js”, “Google Vision vs Tesseract”, “Create Searchable PDFs”.
+
+Clear CTAs to docs and pricing. Social proof section (logos, testimonials placeholder).
+
+Deliverables:
+
+Full stack code (frontend + backend + worker) with env templates.
+
+Docker setup & deployment notes.
+
+Seed script to create admin, plans, and example data.
+
+Postman collection / OpenAPI spec.
+
+README with quick start.
+
+Non-goals:
+
+No biometric/face verification.
+
+No official CNIC verification (only OCR of text on images).
