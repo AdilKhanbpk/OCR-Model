@@ -8,13 +8,14 @@ import { setupAuth, isAuthenticated } from "./replitAuth";
 import { requireAuth, requireAdmin, apiKeyAuth, AuthenticatedRequest } from "./middleware/auth";
 import { rateLimit } from "./middleware/rateLimit";
 import { ocrService } from "./services/ocr";
+import { exportService } from "./services/exportService";
 import { insertApiKeySchema, insertWebhookSchema } from "@shared/schema";
 import { z } from "zod";
 
 // Make Stripe optional - can work without it for now
-const stripe = process.env.STRIPE_SECRET_KEY 
+const stripe = process.env.STRIPE_SECRET_KEY
   ? new Stripe(process.env.STRIPE_SECRET_KEY, {
-      apiVersion: "2024-06-20",
+      apiVersion: "2025-07-30.basil" as any,
     })
   : null;
 
@@ -103,7 +104,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const authReq = req as AuthenticatedRequest;
       const job = await storage.getJob(req.params.jobId);
-      
+
       if (!job || job.userId !== authReq.user.id) {
         return res.status(404).json({ message: 'Job not found' });
       }
@@ -113,9 +114,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
         status: job.status,
         filename: job.filename,
         pages: job.pages,
+        docType: job.docType,
+        docTypeConfidence: job.docTypeConfidence,
+        processorType: job.processorType,
         rawText: job.rawText,
         structuredData: job.structuredData,
+        extractedFields: job.extractedFields,
         confidence: job.confidence,
+        needsReview: job.needsReview,
         error: job.error,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
@@ -260,6 +266,155 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Usage logs fetch error:', error);
       res.status(500).json({ message: 'Failed to fetch usage logs' });
+    }
+  });
+
+  // Review queue endpoints
+  app.get('/api/jobs/review-queue', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const jobs = await storage.getJobsByStatus('needs_review');
+
+      // Filter to user's jobs only (unless admin)
+      const user = await storage.getUser(userId);
+      const filteredJobs = user?.role === 'admin' ? jobs : jobs.filter(job => job.userId === userId);
+
+      res.json(filteredJobs);
+    } catch (error) {
+      console.error('Review queue fetch error:', error);
+      res.status(500).json({ message: 'Failed to fetch review queue' });
+    }
+  });
+
+  app.post('/api/jobs/:jobId/corrections', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { jobId } = req.params;
+      const { corrections, notes } = req.body;
+
+      // Verify job ownership
+      const job = await storage.getJob(jobId);
+      if (!job) {
+        return res.status(404).json({ message: 'Job not found' });
+      }
+
+      const user = await storage.getUser(userId);
+      if (job.userId !== userId && user?.role !== 'admin') {
+        return res.status(403).json({ message: 'Not authorized to correct this job' });
+      }
+
+      // Save corrections
+      for (const correction of corrections) {
+        await storage.createFieldCorrection({
+          jobId,
+          fieldName: correction.fieldName,
+          originalValue: correction.originalValue,
+          correctedValue: correction.correctedValue,
+          originalConfidence: correction.originalConfidence?.toString(),
+          correctedBy: userId,
+          correctionType: correction.correctionType || 'manual',
+          notes: notes || undefined,
+        });
+      }
+
+      // Update job status to completed
+      await storage.updateJob(jobId, {
+        status: 'completed',
+        reviewedBy: userId,
+        reviewedAt: new Date(),
+        needsReview: false,
+      });
+
+      res.json({ message: 'Corrections saved successfully' });
+    } catch (error) {
+      console.error('Correction save error:', error);
+      res.status(500).json({ message: 'Failed to save corrections' });
+    }
+  });
+
+  app.post('/api/jobs/:jobId/approve', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { jobId } = req.params;
+
+      // Verify job ownership
+      const job = await storage.getJob(jobId);
+      if (!job) {
+        return res.status(404).json({ message: 'Job not found' });
+      }
+
+      const user = await storage.getUser(userId);
+      if (job.userId !== userId && user?.role !== 'admin') {
+        return res.status(403).json({ message: 'Not authorized to approve this job' });
+      }
+
+      // Update job status to completed without corrections
+      await storage.updateJob(jobId, {
+        status: 'completed',
+        reviewedBy: userId,
+        reviewedAt: new Date(),
+        needsReview: false,
+      });
+
+      res.json({ message: 'Job approved successfully' });
+    } catch (error) {
+      console.error('Job approval error:', error);
+      res.status(500).json({ message: 'Failed to approve job' });
+    }
+  });
+
+  // Export endpoints
+  app.post('/api/export/jobs', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const { jobIds, format = 'csv', includeRawText = false, includeMetadata = false } = req.body;
+
+      if (!jobIds || !Array.isArray(jobIds) || jobIds.length === 0) {
+        return res.status(400).json({ message: 'Job IDs are required' });
+      }
+
+      const result = await exportService.exportJobs(userId, jobIds, {
+        format,
+        includeRawText,
+        includeMetadata,
+      });
+
+      res.setHeader('Content-Type', result.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      res.send(result.data);
+    } catch (error) {
+      console.error('Export error:', error);
+      res.status(500).json({ message: error instanceof Error ? error.message : 'Export failed' });
+    }
+  });
+
+  app.get('/api/export/stats', isAuthenticated, async (req: any, res) => {
+    try {
+      const userId = req.user.claims.sub;
+      const stats = await exportService.getExportStats(userId);
+      res.json(stats);
+    } catch (error) {
+      console.error('Export stats error:', error);
+      res.status(500).json({ message: 'Failed to fetch export stats' });
+    }
+  });
+
+  app.post('/api/export/training-data', requireAdmin, async (req, res) => {
+    try {
+      const { docType, includeCorrections = true } = req.body;
+
+      if (!docType) {
+        return res.status(400).json({ message: 'Document type is required' });
+      }
+
+      const result = await exportService.exportTrainingData(docType, includeCorrections);
+
+      res.setHeader('Content-Type', result.mimeType);
+      res.setHeader('Content-Disposition', `attachment; filename="${result.filename}"`);
+      res.send(result.data);
+    } catch (error) {
+      console.error('Training data export error:', error);
+      res.status(500).json({ message: error instanceof Error ? error.message : 'Export failed' });
     }
   });
 
