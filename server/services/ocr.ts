@@ -1,5 +1,9 @@
 import { storage } from '../storage';
 import { googleVisionService } from './googleVision';
+import { documentAIService } from './documentAI';
+import { documentClassifierService } from './documentClassifier';
+import { fieldExtractionService } from './fieldExtractor';
+import { webhookService } from './webhookService';
 import { Job, InsertJob, InsertUsageLog } from '@shared/schema';
 import crypto from 'crypto';
 import path from 'path';
@@ -20,6 +24,11 @@ interface ProcessOCRResult {
   job: Job;
   rawText: string;
   structuredData: any;
+  extractedFields?: any;
+  docType?: string;
+  docTypeConfidence?: number;
+  processorType?: string;
+  needsReview?: boolean;
   searchablePdfUrl?: string;
 }
 
@@ -62,12 +71,19 @@ export class OCRService {
     const now = new Date();
     const currentUsage = await storage.getUserUsage(userId, now.getFullYear(), now.getMonth() + 1);
     const pagesUsed = currentUsage?.pagesUsed || 0;
-    
+
     if (pagesUsed >= limit.pages) {
       throw new Error(`Monthly quota exceeded for ${user.plan} plan (${limit.pages} pages)`);
     }
 
-    // Create job record
+    // Step 1: Document Classification
+    const classificationResult = await documentClassifierService.classifyDocument(
+      file.originalname,
+      file.mimetype,
+      file.size
+    );
+
+    // Create job record with classification
     const jobData: InsertJob = {
       userId,
       type: file.mimetype === 'application/pdf' ? 'pdf' : 'image',
@@ -76,6 +92,8 @@ export class OCRService {
       mime: file.mimetype,
       size: file.size,
       pages: 1, // Will be updated for PDFs
+      docType: classificationResult.docType,
+      docTypeConfidence: classificationResult.confidence.toString(),
       languageHints,
       detectHandwriting,
       searchablePdf,
@@ -84,36 +102,81 @@ export class OCRService {
     const job = await storage.createJob(jobData);
 
     try {
-      // Process the file
-      let result;
-      if (file.mimetype === 'application/pdf') {
-        result = await this.processPDFFile(file.buffer, { languageHints, detectHandwriting });
+      // Step 2: OCR Processing - choose processor based on document type and availability
+      let ocrResult;
+      let processorType = 'vision_api';
+      let processorId = '';
+
+      if (documentAIService.hasProcessor(classificationResult.docType)) {
+        // Use Document AI for specialized processing
+        try {
+          const docAIResult = await documentAIService.processDocument(
+            file.buffer,
+            classificationResult.docType,
+            file.mimetype,
+            { languageHints, enableLayout: true }
+          );
+          ocrResult = this.convertDocumentAIToOCRResult(docAIResult);
+          processorType = 'document_ai';
+          processorId = docAIResult.processorId;
+        } catch (error) {
+          console.warn('Document AI failed, falling back to Vision API:', error);
+          // Fallback to Vision API
+          ocrResult = await this.processWithVisionAPI(file, { languageHints, detectHandwriting });
+        }
       } else {
-        result = await this.processImageFile(file.buffer, { languageHints, detectHandwriting });
+        // Use Vision API for generic processing
+        ocrResult = await this.processWithVisionAPI(file, { languageHints, detectHandwriting });
       }
+
+      // Step 3: Field Extraction and Normalization
+      const fieldExtractionResult = await fieldExtractionService.extractFields(
+        ocrResult.rawText,
+        classificationResult.docType,
+        ocrResult.entities, // Document AI entities if available
+        ocrResult.pages
+      );
+
+      // Step 4: Determine if human review is needed
+      const needsReview = fieldExtractionResult.needsReview ||
+        classificationResult.confidence < documentClassifierService.getReviewThreshold(classificationResult.docType);
+
+      // Calculate cost estimate (simplified)
+      const costEstimate = this.calculateCostEstimate(
+        ocrResult.pages?.length || 1,
+        processorType,
+        classificationResult.docType
+      );
 
       // Update job with results
       const updatedJob = await storage.updateJob(job.id, {
-        status: 'completed',
-        pages: result?.pages?.length || 1,
-        rawText: result?.rawText || '',
-        structuredData: result,
-        confidence: result?.confidence?.toString() || '0',
+        status: needsReview ? 'needs_review' : 'completed',
+        pages: ocrResult?.pages?.length || 1,
+        processorType,
+        processorId,
+        rawText: ocrResult?.rawText || '',
+        structuredData: ocrResult,
+        extractedFields: fieldExtractionResult,
+        confidence: fieldExtractionResult.overallConfidence?.toString() || '0',
+        needsReview,
+        costEstimate: costEstimate.toString(),
         processingTime: Date.now() - new Date(job.createdAt!).getTime(),
       });
 
       // Track usage
-      const pagesProcessed = result?.pages?.length || 1;
+      const pagesProcessed = ocrResult?.pages?.length || 1;
       await storage.incrementUserUsage(userId, pagesProcessed);
-      
-      // Log usage
+
+      // Log usage with processor type and cost
       await storage.createUsageLog({
         userId,
         jobId: job.id,
         apiKeyId: options.apiKeyId,
         pages: pagesProcessed,
         bytes: file.size,
-        status: 'completed',
+        status: needsReview ? 'needs_review' : 'completed',
+        processorType,
+        costIncurred: costEstimate.toString(),
         ip: options.ip,
         userAgent: options.userAgent,
       });
@@ -123,10 +186,27 @@ export class OCRService {
         await storage.updateApiKeyLastUsed(options.apiKeyId);
       }
 
+      // Trigger webhooks for job completion
+      const webhookEvent = needsReview ? 'job.needs_review' : 'job.completed';
+      webhookService.triggerWebhooks(webhookEvent, updatedJob, {
+        extractedFields: fieldExtractionResult.fields,
+        docType: classificationResult.docType,
+        docTypeConfidence: classificationResult.confidence,
+        processorType,
+      }).catch(error => {
+        console.error('Webhook trigger failed:', error);
+        // Don't fail the main process if webhooks fail
+      });
+
       return {
         job: updatedJob,
-        rawText: result?.rawText || '',
-        structuredData: result,
+        rawText: ocrResult?.rawText || '',
+        structuredData: ocrResult,
+        extractedFields: fieldExtractionResult,
+        docType: classificationResult.docType,
+        docTypeConfidence: classificationResult.confidence,
+        processorType,
+        needsReview,
         searchablePdfUrl: undefined, // TODO: Implement searchable PDF generation
       };
 
@@ -154,6 +234,60 @@ export class OCRService {
     }
   }
 
+  private async processWithVisionAPI(file: Express.Multer.File, options: { languageHints?: string[]; detectHandwriting?: boolean }): Promise<any> {
+    if (file.mimetype === 'application/pdf') {
+      // For PDF processing, we use demo mode since we don't have GCS setup
+      return await googleVisionService.processImage(file.buffer, {
+        languageHints: options.languageHints,
+        detectHandwriting: options.detectHandwriting,
+      });
+    } else {
+      return await googleVisionService.processImage(file.buffer, {
+        languageHints: options.languageHints,
+        detectHandwriting: options.detectHandwriting,
+      });
+    }
+  }
+
+  private convertDocumentAIToOCRResult(docAIResult: any): any {
+    // Convert Document AI result to match Vision API format for compatibility
+    return {
+      rawText: docAIResult.rawText,
+      pages: docAIResult.pages.map((page: any) => ({
+        width: page.dimension.width,
+        height: page.dimension.height,
+        blocks: page.blocks,
+      })),
+      entities: docAIResult.entities, // Additional structured data from Document AI
+      confidence: docAIResult.confidence,
+      processorType: docAIResult.processorType,
+      processorId: docAIResult.processorId,
+    };
+  }
+
+  private calculateCostEstimate(pages: number, processorType: string, docType: string): number {
+    // Simplified cost calculation based on Google Cloud pricing
+    const costs = {
+      vision_api: 0.0015, // $1.50 per 1000 pages
+      document_ai: {
+        invoice: 0.05, // $50 per 1000 pages for Invoice processor
+        receipt: 0.05,
+        id: 0.05,
+        bank_statement: 0.05,
+        form: 0.02, // $20 per 1000 pages for Form processor
+        generic: 0.0015, // Same as Vision API
+      },
+    };
+
+    if (processorType === 'document_ai') {
+      const docAICosts = costs.document_ai as any;
+      return pages * (docAICosts[docType] || docAICosts.generic);
+    }
+
+    return pages * costs.vision_api;
+  }
+
+  // Legacy methods for backward compatibility
   private async processImageFile(buffer: Buffer, options: { languageHints?: string[]; detectHandwriting?: boolean }): Promise<any> {
     return await googleVisionService.processImage(buffer, {
       languageHints: options.languageHints,
