@@ -8,9 +8,9 @@ import { formatDistanceToNow } from 'date-fns';
 interface Job {
   id: string;
   filename: string;
-  type: string;
+  type?: string;
   status: string;
-  pages: number;
+  pages?: number;
   confidence?: string;
   error?: string;
   createdAt: string;
