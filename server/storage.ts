@@ -423,4 +423,9 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
-export const storage = new DatabaseStorage();
+// Use mock storage when database is disabled
+import { mockStorage } from './mockStorage';
+
+const isDatabaseEnabled = process.env.DATABASE_ENABLED === 'true';
+
+export const storage = isDatabaseEnabled ? new DatabaseStorage() : mockStorage as any;

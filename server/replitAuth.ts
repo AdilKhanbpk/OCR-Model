@@ -127,6 +127,21 @@ export async function setupAuth(app: Express) {
 }
 
 export const isAuthenticated: RequestHandler = async (req, res, next) => {
+  // In demo mode (database disabled), bypass authentication with demo user
+  if (process.env.DATABASE_ENABLED !== 'true') {
+    console.log('🎭 [DEMO MODE] Bypassing authentication with demo user');
+    (req as any).user = {
+      claims: {
+        sub: 'demo-user-1',
+        email: 'demo@example.com',
+        name: 'Demo User',
+        given_name: 'Demo',
+        family_name: 'User',
+      }
+    };
+    return next();
+  }
+
   const user = req.user as any;
 
   if (!req.isAuthenticated() || !user.expires_at) {

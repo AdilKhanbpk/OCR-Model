@@ -4,6 +4,7 @@ import { documentAIService } from './documentAI';
 import { documentClassifierService } from './documentClassifier';
 import { fieldExtractionService } from './fieldExtractor';
 import { webhookService } from './webhookService';
+import { demoDataGenerator } from './demoDataGenerator';
 import { Job, InsertJob, InsertUsageLog } from '@shared/schema';
 import crypto from 'crypto';
 import path from 'path';
@@ -55,11 +56,15 @@ export class OCRService {
   async processOCR(options: ProcessOCROptions): Promise<ProcessOCRResult> {
     const { userId, file, languageHints = ['en'], detectHandwriting = false, searchablePdf = false } = options;
 
-    // Get user and check quota
+    console.log(`🔄 [OCR] Processing file: ${file.originalname} (${file.size} bytes) for user: ${userId}`);
+
+    // Get user and check quota (using mock storage)
     const user = await storage.getUser(userId);
     if (!user) {
       throw new Error('User not found');
     }
+
+    console.log(`👤 [OCR] User: ${user.firstName} ${user.lastName} (${user.plan} plan)`);
 
     // Check file size limits
     const limit = this.planLimits[user.plan as keyof typeof this.planLimits] || this.planLimits.free;
@@ -102,40 +107,70 @@ export class OCRService {
     const job = await storage.createJob(jobData);
 
     try {
-      // Step 2: OCR Processing - choose processor based on document type and availability
-      let ocrResult;
-      let processorType = 'vision_api';
-      let processorId = '';
+      // Check if we're in demo mode (database disabled)
+      const isDemoMode = process.env.DATABASE_ENABLED !== 'true';
 
-      if (documentAIService.hasProcessor(classificationResult.docType)) {
-        // Use Document AI for specialized processing
-        try {
-          const docAIResult = await documentAIService.processDocument(
-            file.buffer,
-            classificationResult.docType,
-            file.mimetype,
-            { languageHints, enableLayout: true }
-          );
-          ocrResult = this.convertDocumentAIToOCRResult(docAIResult);
-          processorType = 'document_ai';
-          processorId = docAIResult.processorId;
-        } catch (error) {
-          console.warn('Document AI failed, falling back to Vision API:', error);
-          // Fallback to Vision API
+      let ocrResult;
+      let processorType = 'demo_mode';
+      let processorId = '';
+      let fieldExtractionResult;
+
+      if (isDemoMode) {
+        console.log(`🎭 [DEMO MODE] Generating demo OCR results for ${classificationResult.docType}`);
+
+        // Generate realistic demo data
+        const demoResult = demoDataGenerator.generateDemoResult(file.originalname, classificationResult.docType);
+
+        ocrResult = {
+          rawText: demoResult.rawText,
+          pages: demoResult.structuredData.pages,
+          entities: [],
+          confidence: demoResult.confidence,
+          processorType: 'demo_mode',
+          processorId: 'demo-processor',
+        };
+
+        fieldExtractionResult = demoResult.extractedFields;
+        processorType = 'demo_mode';
+        processorId = 'demo-processor';
+
+        // Simulate processing delay
+        await new Promise(resolve => setTimeout(resolve, demoResult.processingTime));
+
+      } else {
+        // Real processing mode
+        console.log(`🔄 [REAL MODE] Processing with actual OCR services`);
+
+        if (documentAIService.hasProcessor(classificationResult.docType)) {
+          // Use Document AI for specialized processing
+          try {
+            const docAIResult = await documentAIService.processDocument(
+              file.buffer,
+              classificationResult.docType,
+              file.mimetype,
+              { languageHints, enableLayout: true }
+            );
+            ocrResult = this.convertDocumentAIToOCRResult(docAIResult);
+            processorType = 'document_ai';
+            processorId = docAIResult.processorId;
+          } catch (error) {
+            console.warn('Document AI failed, falling back to Vision API:', error);
+            // Fallback to Vision API
+            ocrResult = await this.processWithVisionAPI(file, { languageHints, detectHandwriting });
+          }
+        } else {
+          // Use Vision API for generic processing
           ocrResult = await this.processWithVisionAPI(file, { languageHints, detectHandwriting });
         }
-      } else {
-        // Use Vision API for generic processing
-        ocrResult = await this.processWithVisionAPI(file, { languageHints, detectHandwriting });
-      }
 
-      // Step 3: Field Extraction and Normalization
-      const fieldExtractionResult = await fieldExtractionService.extractFields(
-        ocrResult.rawText,
-        classificationResult.docType,
-        ocrResult.entities, // Document AI entities if available
-        ocrResult.pages
-      );
+        // Step 3: Field Extraction and Normalization
+        fieldExtractionResult = await fieldExtractionService.extractFields(
+          ocrResult.rawText,
+          classificationResult.docType,
+          ocrResult.entities, // Document AI entities if available
+          ocrResult.pages
+        );
+      }
 
       // Step 4: Determine if human review is needed
       const needsReview = fieldExtractionResult.needsReview ||
