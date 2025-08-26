@@ -12,16 +12,28 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
+  let headers: Record<string, string> = {};
+  let body: BodyInit | undefined;
+
+  if (data instanceof FormData) {
+    body = data;
+    // ❌ Do NOT set Content-Type here — fetch will add the proper multipart boundary
+  } else if (data !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(data);
+  }
+
   const res = await fetch(url, {
     method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
+    headers,
+    body,
     credentials: "include",
   });
 
   await throwIfResNotOk(res);
   return res;
 }
+
 
 type UnauthorizedBehavior = "returnNull" | "throw";
 export const getQueryFn: <T>(options: {
