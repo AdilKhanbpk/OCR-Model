@@ -1,0 +1,24 @@
+User-agent: *
+Allow: /
+
+# SEO-friendly pages
+Allow: /ocr-for-images
+Allow: /ocr-for-pdfs
+Allow: /ocr-for-invoices
+Allow: /ocr-for-id-cards
+Allow: /about
+Allow: /contact
+Allow: /privacy
+Allow: /terms
+Allow: /pricing
+Allow: /blog
+Allow: /faq
+
+# Disallow admin and private areas
+Disallow: /dashboard
+Disallow: /admin
+Disallow: /api/
+Disallow: /auth/
+
+# Sitemap location
+Sitemap: https://your-domain.com/sitemap.xml

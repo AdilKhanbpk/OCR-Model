@@ -4,11 +4,13 @@ import { createServer, type Server } from "http";
 import multer from "multer";
 import Stripe from "stripe";
 import { storage } from "./storage";
-import { setupAuth, isAuthenticated } from "./replitAuth";
-import { requireAuth, requireAdmin, apiKeyAuth, AuthenticatedRequest } from "./middleware/auth";
+import { isAuthenticated, loginHandler, logoutHandler } from "./simpleAuth";
+import { requireAdmin } from "./simpleAuth";
+import { apiKeyAuth, AuthenticatedRequest } from "./middleware/auth";
 import { rateLimit } from "./middleware/rateLimit";
 import { ocrService } from "./services/ocr";
 import { exportService } from "./services/exportService";
+import { addSitemapRoute } from "./sitemap";
 import { insertApiKeySchema, insertWebhookSchema } from "@shared/schema";
 import { z } from "zod";
 
@@ -44,10 +46,16 @@ const upload = multer({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Auth middleware
-  await setupAuth(app);
+  // Simple auth setup (no Replit dependencies)
+  console.log('🔧 Setting up simple authentication system');
 
-  // Auth routes
+  // Add SEO routes
+  addSitemapRoute(app);
+
+  // Simple auth routes
+  app.post('/api/auth/login', loginHandler);
+  app.post('/api/auth/logout', logoutHandler);
+
   app.get('/api/auth/user', isAuthenticated, async (req: any, res) => {
     try {
       const userId = req.user.claims.sub;

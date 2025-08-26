@@ -201,7 +201,7 @@ export default function FileUpload({ onUploadComplete }: FileUploadProps) {
                 <Checkbox
                   id="handwriting"
                   checked={detectHandwriting}
-                  onCheckedChange={setDetectHandwriting}
+                  onCheckedChange={(checked) => setDetectHandwriting(checked === true)}
                   data-testid="handwriting-checkbox"
                 />
                 <Label htmlFor="handwriting" className="text-sm">

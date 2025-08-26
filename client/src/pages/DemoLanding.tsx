@@ -3,12 +3,13 @@ import { Link } from 'wouter';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { 
-  FileText, 
-  Zap, 
-  Shield, 
-  Globe, 
-  CheckCircle, 
+import SEOHead, { createWebApplicationSchema, createServiceSchema } from '@/components/SEOHead';
+import {
+  FileText,
+  Zap,
+  Shield,
+  Globe,
+  CheckCircle,
   ArrowRight,
   Upload,
   Eye,
@@ -23,6 +24,20 @@ import {
 
 export default function DemoLanding() {
   const [isHovered, setIsHovered] = useState<string | null>(null);
+
+  // SEO data
+  const seoData = {
+    title: 'OCR Service Pro - AI-Powered Document Text Extraction | Free OCR Tool',
+    description: 'Professional OCR service for extracting text from images, PDFs, invoices, and ID cards. 99% accuracy, 25+ languages, instant processing. Try our free OCR tool now!',
+    keywords: 'OCR, text extraction, PDF to text, image to text, document processing, AI OCR, free OCR tool, invoice OCR, ID card OCR',
+    canonicalUrl: 'https://your-domain.com/',
+  };
+
+  const structuredData = createWebApplicationSchema(
+    'OCR Service Pro',
+    'Professional OCR service for accurate text extraction from images and documents with AI-powered processing',
+    'https://your-domain.com/'
+  );
 
   const features = [
     {
@@ -72,6 +87,14 @@ export default function DemoLanding() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
+      {/* SEO Head */}
+      <SEOHead
+        title={seoData.title}
+        description={seoData.description}
+        keywords={seoData.keywords}
+        canonicalUrl={seoData.canonicalUrl}
+        structuredData={structuredData}
+      />
       {/* Header */}
       <header className="border-b bg-white/80 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">

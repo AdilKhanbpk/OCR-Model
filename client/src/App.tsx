@@ -15,11 +15,16 @@ import Pricing from "@/pages/Pricing";
 import Admin from "@/pages/Admin";
 import Subscribe from "@/pages/Subscribe";
 
+// SEO Pages
+import OCRForImages from "@/pages/seo/OCRForImages";
+import OCRForPDFs from "@/pages/seo/OCRForPDFs";
+
 function Router() {
   const { isAuthenticated, isLoading } = useAuth();
 
   // In demo mode, always show demo landing and bypass auth
-  const isDemoMode = process.env.DATABASE_ENABLED !== 'true';
+  // Use import.meta.env for Vite instead of process.env
+  const isDemoMode = import.meta.env.VITE_DATABASE_ENABLED !== 'true';
 
   return (
     <Switch>
@@ -32,6 +37,12 @@ function Router() {
           <Route path="/admin" component={Admin} />
           <Route path="/pricing" component={Pricing} />
           <Route path="/subscribe" component={Subscribe} />
+
+          {/* SEO-friendly service pages */}
+          <Route path="/ocr-for-images" component={OCRForImages} />
+          <Route path="/ocr-for-pdfs" component={OCRForPDFs} />
+          <Route path="/ocr-text-extraction" component={OCRForImages} />
+          <Route path="/pdf-to-text" component={OCRForPDFs} />
         </>
       ) : isLoading || !isAuthenticated ? (
         <>
